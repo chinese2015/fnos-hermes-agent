@@ -1416,6 +1416,7 @@
                       <button class="tool-btn" data-tip="@ 成员（并行回复）" onclick="roomAtDialog()" id="roomAtBtn"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
                       <button class="tool-btn" data-tip="上传附件" onclick="roomAttachClick()" id="roomAttachBtn"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
                       <button class="tool-btn" data-tip="房间共享记忆" onclick="roomMemoryDialog()" id="roomMemBtn"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 1 7 7c0 3-2 5.5-4 7l-1 4H10l-1-4C7 14.5 5 12 5 9a7 7 0 0 1 7-7z"/></svg></button>
+                      <button class="tool-btn" data-tip="房间设置（名称/模型/成员模型）" onclick="roomSettingsDialog()" id="roomSetBtn"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
                     </div>
                   </div>
                 </div>
@@ -14884,7 +14885,7 @@ function renderRoomList(){
     var it=document.createElement('div'); it.className='room-item'+(String(r.id)===String(currentRoom)?' active':'');
     var mems=(r.members||[]).map(function(m){ return (m.emoji||'')+m.label; }).join(' ');
     it.innerHTML='<div class="t1"><span>'+escapeHtml(r.title||'群聊')+'</span><span class="del" onclick="event.stopPropagation();roomDelete(\''+r.id+'\')">✕</span></div>'+
-      '<div class="t2"><span>'+((r.members||[]).length+1)+' 成员</span><span>'+(r.message_count||0)+' 条</span>'+(mems?'<span style="color:var(--accent)">'+escapeHtml(mems)+'</span>':'')+'</div>';
+      '<div class="t2"><span>'+((r.members||[]).length+1)+' 成员</span><span>'+(r.message_count||0)+' 条</span>'+(r.model?'<span style="color:var(--muted)">🧠 '+escapeHtml(r.model)+'</span>':'')+(mems?'<span style="color:var(--accent)">'+escapeHtml(mems)+'</span>':'')+'</div>';
     it.onclick=function(){ selectRoom(r.id); };
     box.appendChild(it);
   });
@@ -14918,7 +14919,7 @@ function renderRoomMembers(members){
   box.innerHTML='';
   members.forEach(function(m){
     var c=document.createElement('span'); c.className='room-member';
-    c.innerHTML=(m.emoji||'🧠')+' '+escapeHtml(m.label);
+    c.innerHTML=(m.emoji||'🧠')+' '+escapeHtml(m.label)+(m.model?'<span style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:6px;padding:0 4px;margin-left:4px" title="该成员专属模型">'+escapeHtml(m.model)+'</span>':'');
     box.appendChild(c);
   });
 }

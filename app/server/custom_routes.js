@@ -69,10 +69,12 @@ async function _mkRoomSession(tag) {
 }
 async function _hermesOnce(sid, message, system, model) {
   try {
+    const _m = String(model || "");
+    const _p = _m ? _resolveProviderForModel(_m) : "";
     const r = await fetch(`http://127.0.0.1:${ROOMS_UI_PORT}/api/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sid, message, system: system || "", model: model || "", provider: "" }),
+      body: JSON.stringify({ session_id: sid, message, system: system || "", model: _m, provider: _p }),
       signal: AbortSignal.timeout(180000),
     });
     if (!r.ok || !r.body) return "";
@@ -193,7 +195,7 @@ async function _chainLoop(rid) {
       log(`[autopilot] 触发 ${nm.label} 发言（剩余 ${room.autopilot.remaining} 轮）`);
       await new Promise(r => setTimeout(r, 800));
       try {
-        await runRoomMember(rid, nm, pick.text, nm.system || "", room.model || "", "", nm.session_id || "");
+        await runRoomMember(rid, nm, pick.text, nm.system || "", nm.model || room.model || "", "", nm.session_id || "");
       } catch (e) {
         log(`[autopilot] ${nm.label} 发言异常:`, e.message);
         broadcastRoom(rid, { type: "err", key: nm.key, label: nm.label || nm.key, error: "自动接力发言失败：" + (e.message || "") });
@@ -292,6 +294,24 @@ function pushRoomMsg(rid, msg) {
   r.updated_at = Date.now();
   saveRooms();
 }
+// 模型 → provider 反查（读 monitor 的 chat/config.json）：
+// /api/chat/stream 的会话级模型路由要求 {provider, model} 成对传入——只传 model
+// 会被忽略（走网关当前全局默认）。成员/房间选了具体模型时必须补上 provider id，
+// monitor 侧才会经 applyGatewayModelOverride 热切换网关默认模型后执行。
+function _resolveProviderForModel(model) {
+  try {
+    const m = String(model || "").trim();
+    if (!m || m === "auto") return "";
+    const cfg = JSON.parse(readFileSync(`${VAR_DIR}/chat/config.json`, "utf8") || "{}");
+    for (const p of (cfg.providers || [])) {
+      const models = (Array.isArray(p.models) && p.models.length) ? p.models : (p.model ? [p.model] : []);
+      const ids = models.map(md => (typeof md === "string" ? md : ((md && (md.id || md.name)) || "")));
+      if (ids.includes(m)) return String(p.id || p.name || "");
+    }
+    log(`[rooms] 模型 "${m}" 未在任何 provider 的模型列表中，回退网关默认模型`);
+  } catch (e) { /* 保持空 provider */ }
+  return "";
+}
 async function runRoomMember(rid, member, text, system, model, provider, sessionId) {
   // 惰性初始化成员 Hermes 会话：首次发言自动注册（根因修复——此前未预热的成员被主持人选中后直接静默失败，接力链中断）
   if (!sessionId) {
@@ -307,10 +327,12 @@ async function runRoomMember(rid, member, text, system, model, provider, session
   let full = "";
   let reasoning = "";
   try {
+    const _m = String(model || "");
+    const _p = String(provider || "") || (_m ? _resolveProviderForModel(_m) : "");
     const r = await fetch(`http://127.0.0.1:${ROOMS_UI_PORT}/api/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionIdFinal, message: text, system: system || "", model: model || "", provider: provider || "" }),
+      body: JSON.stringify({ session_id: sessionIdFinal, message: text, system: system || "", model: _m, provider: _p }),
       signal: AbortSignal.timeout(600000),
     });
     if (!r.ok || !r.body) throw new Error("stream HTTP " + r.status);
@@ -1764,7 +1786,7 @@ export async function handleCustomRoute(req) {
   // ── 群聊（Rooms）路由 ──────────────────────────────────────────────
   if (path === "/api/rooms" && method === "GET") {
     loadRooms();
-    return new Response(JSON.stringify({ ok: true, rooms: roomsStore.map(r => ({ id: r.id, title: r.title, created_at: r.created_at, updated_at: r.updated_at, members: r.members, message_count: (r.messages || []).length })) }), { headers: jsonHeaders() });
+    return new Response(JSON.stringify({ ok: true, rooms: roomsStore.map(r => ({ id: r.id, title: r.title, model: r.model || "", created_at: r.created_at, updated_at: r.updated_at, members: r.members, message_count: (r.messages || []).length })) }), { headers: jsonHeaders() });
   }
   if (path === "/api/rooms" && method === "POST") {
     try {
@@ -1797,6 +1819,19 @@ export async function handleCustomRoute(req) {
     if (sub === "" && method === "GET") {
       return new Response(JSON.stringify({ ok: true, room }), { headers: jsonHeaders() });
     }
+    // 更新房间标题/默认模型（房间设置弹窗）
+    if (sub === "" && method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        if (body.title !== undefined) room.title = String(body.title || room.title).slice(0, 60);
+        if (body.model !== undefined) room.model = String(body.model || "").slice(0, 80);
+        room.updated_at = Date.now();
+        saveRooms();
+        return new Response(JSON.stringify({ ok: true, room: { id: room.id, title: room.title, model: room.model } }), { headers: jsonHeaders() });
+      } catch (e) {
+        return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500, headers: jsonHeaders() });
+      }
+    }
     if (sub === "regenerate" && method === "POST") {
       try {
         const body = await req.json().catch(() => ({}));
@@ -1814,7 +1849,7 @@ export async function handleCustomRoute(req) {
         saveRooms();
         if (!member || !userMsg) return new Response(JSON.stringify({ ok: true, skipped: true }), { headers: jsonHeaders() });
         broadcastRoom(rid, { type: "user", text: userMsg, ts: Date.now() });
-        setTimeout(() => { runRoomMember(rid, member, userMsg, member.system || "", room.model || "", "", member.session_id || ""); }, 400);
+        setTimeout(() => { runRoomMember(rid, member, userMsg, member.system || "", member.model || room.model || "", "", member.session_id || ""); }, 400);
         return new Response(JSON.stringify({ ok: true }), { headers: jsonHeaders() });
       } catch (e) {
         return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500, headers: jsonHeaders() });
@@ -1849,7 +1884,15 @@ export async function handleCustomRoute(req) {
         if (Array.isArray(body.members)) {
           body.members.forEach(m => {
             const key = String(m.key || randomBytes(4).toString("hex"));
-            if (!room.members.find(x => x.key === key)) room.members.push({ key, label: String(m.label || "专家"), emoji: String(m.emoji || "🧠"), persona_id: m.persona_id || "", model: m.model || "" });
+            const existing = room.members.find(x => x.key === key);
+            if (!existing) {
+              room.members.push({ key, label: String(m.label || "专家"), emoji: String(m.emoji || "🧠"), persona_id: m.persona_id || "", model: m.model || "" });
+            } else {
+              // upsert：允许更新已有成员的专属模型/显示名（房间设置弹窗用）
+              if (m.model !== undefined) existing.model = String(m.model || "").slice(0, 80);
+              if (m.label) existing.label = String(m.label).slice(0, 60);
+              if (m.emoji) existing.emoji = String(m.emoji).slice(0, 16);
+            }
           });
           saveRooms();
           broadcastRoom(rid, { type: "members", members: room.members });

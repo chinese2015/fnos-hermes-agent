@@ -160,7 +160,7 @@ window.roomAtDialog=function(){
   if(!(room.members||[]).length){ toast30('该房间暂无专家成员，请先「＋ 新建房间」时勾选专家','error'); return; }
   var membersHtml=room.members.map(function(m){
     var on=typeof roomAt!=="undefined"&&roomAt.has(m.key);
-    return '<label class="room-ck"><input type="checkbox" value="'+m.key+'"'+(on?' checked':'')+' style="accent-color:var(--accent)"><span>'+(m.emoji||'🧠')+' '+esc30(m.label)+'</span></label>';
+    return '<label class="room-ck"><input type="checkbox" value="'+m.key+'"'+(on?' checked':'')+' style="accent-color:var(--accent)"><span>'+(m.emoji||'🧠')+' '+esc30(m.label)+(m.model?' <span style="color:var(--muted);font-size:10.5px">🧠'+esc30(m.model)+'</span>':'')+'</span></label>';
   }).join('');
   modal30("@ 成员（可多选，并行回复）", membersHtml+'<div style="font-size:11.5px;color:var(--muted)">不选择任何成员 = 主 Hermes 回复</div>',
     '<button class="btn" onclick="this.closest(\'.modal-overlay\').remove()">取消</button><button class="btn primary" onclick="roomAtDialogConfirm()">确定</button>');
@@ -818,7 +818,7 @@ window.roomCreateDialog=function(){
   var exps=(window.AGENCY_PERSONAS||[]);
   if(!exps.length){ toast('专家库未加载，请稍后重试','error'); return; }
   var opts=exps.slice(0,140).map(function(x){
-    return '<label class="room-ck"><input type="checkbox" value="'+x.id+'" data-label="'+escapeHtml(x.label)+'" data-emoji="'+escapeHtml(x.emoji||'🧠')+'" data-prompt="'+escapeHtml(x.prompt||'')+'" style="accent-color:var(--accent)"><span>'+escapeHtml(x.emoji||'🧠')+' '+escapeHtml(x.label)+' <span style="color:var(--muted);font-size:11px">'+escapeHtml(x.dept_label||'')+'</span></span></label>';
+    return '<label class="room-ck" style="display:flex;align-items:center;justify-content:space-between;gap:4px"><span style="display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden"><input type="checkbox" value="'+x.id+'" data-label="'+escapeHtml(x.label)+'" data-emoji="'+escapeHtml(x.emoji||'🧠')+'" data-prompt="'+escapeHtml(x.prompt||'')+'" style="accent-color:var(--accent);flex-shrink:0"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(x.emoji||'🧠')+' '+escapeHtml(x.label)+' <span style="color:var(--muted);font-size:11px">'+escapeHtml(x.dept_label||'')+'</span></span></span><select class="mm-sel" data-pid="'+x.id+'" title="该成员的专属模型（默认跟随房间）" style="flex-shrink:0;font-size:10.5px;max-width:82px;padding:1px 2px;border-radius:6px;background:var(--bg1);color:var(--muted);border:1px solid var(--border)"><option value="">跟随房间</option></select></label>';
   }).join('');
   var html='<div class="modal-overlay" id="roomCreateOverlay" onclick="if(event.target===this)this.remove()">'+
     '<div class="modal" style="max-width:560px">'+
@@ -838,19 +838,19 @@ window.roomCreateDialog=function(){
     '</div></div></div>';
   var div=document.createElement('div'); div.innerHTML=html; document.body.appendChild(div.firstChild);
   api30('/api/config').then(function(r){
-    var sel=document.getElementById('roomCreateModel'); if(!sel) return;
     var ps=(r&&(r.providers||r.ymlProviders))||[];
-    var h='<option value="">默认模型</option>';
+    var optsHtml='';
     ps.forEach(function(p){
       var models=(p.models&&p.models.length)?p.models:[p.model].filter(Boolean);
       models.forEach(function(md){
         // models 可能是对象数组（{id,name,...}）或字符串数组
         var mid=(typeof md==='string')?md:(md&&(md.id||md.name)||'');
         var mlabel=(typeof md==='string')?md:(md&&(md.name||md.id)||mid);
-        if(mid) h+='<option value="'+mid+'">'+mlabel+'（'+(p.name||p.id)+'）</option>';
+        if(mid) optsHtml+='<option value="'+mid+'">'+mlabel+'（'+(p.name||p.id)+'）</option>';
       });
     });
-    sel.innerHTML=h;
+    var sel=document.getElementById('roomCreateModel'); if(sel) sel.innerHTML='<option value="">默认模型</option>'+optsHtml;
+    document.querySelectorAll('#roomCreateOverlay .mm-sel').forEach(function(s){ s.innerHTML='<option value="">跟随房间</option>'+optsHtml; });
   }).catch(function(){});
 };
 window.roomCreateConfirm=function(){
@@ -858,7 +858,8 @@ window.roomCreateConfirm=function(){
   var model=(document.getElementById('roomCreateModel')||{}).value||'';
   var members=[];
   document.querySelectorAll('#roomCreateOverlay input:checked').forEach(function(cb){
-    members.push({ key:'exp_'+cb.value, label:cb.getAttribute('data-label'), emoji:cb.getAttribute('data-emoji'), persona_id:cb.value, system:cb.getAttribute('data-prompt') });
+    var sel=document.querySelector('#roomCreateOverlay .mm-sel[data-pid="'+cb.value+'"]');
+    members.push({ key:'exp_'+cb.value, label:cb.getAttribute('data-label'), emoji:cb.getAttribute('data-emoji'), persona_id:cb.value, system:cb.getAttribute('data-prompt'), model: sel?sel.value:'' });
   });
   var ov=document.getElementById('roomCreateOverlay'); if(ov) ov.remove();
   api30('/api/rooms','POST',{title:title,members:members,model:model}).then(function(r){
@@ -868,6 +869,68 @@ window.roomCreateConfirm=function(){
       toast30('房间已创建'+(model?'（模型:'+model+'）':''),'success');
     } else toast30('创建失败: '+((r&&r.error)||''),'error');
   }).catch(function(e){ toast30('创建失败: '+e.message,'error'); });
+};
+
+/* 房间设置：改房间名/房间默认模型/每个成员的专属模型（后端 members upsert） */
+window.roomSettingsDialog=function(){
+  if(!currentRoom){ toast30('请先选择房间','error'); return; }
+  api30('/api/rooms/'+encodeURIComponent(currentRoom),'GET').then(function(r){
+    var room=r&&r.room; if(!room){ toast30('房间数据加载失败','error'); return; }
+    var mems=(room.members||[]).map(function(m){
+      return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px" data-mkey="'+esc30(m.key)+'">'+
+        '<span style="flex-shrink:0;font-size:12.5px;min-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(m.emoji||'🧠')+' '+esc30(m.label)+'</span>'+
+        '<select class="rs-mdl" style="flex:1;min-width:0;font-size:11.5px;padding:4px 6px;border-radius:8px;background:var(--bg1);color:var(--text);border:1px solid var(--border)"><option value="">跟随房间默认</option></select>'+
+      '</div>';
+    }).join('');
+    modal30('⚙️ 房间设置',
+      '<div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text)">房间名称</div>'+
+      '<input id="rsTitle" value="'+esc30(room.title||'')+'" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:8px;background:var(--bg1);color:var(--text);margin-bottom:12px">'+
+      '<div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text)">房间默认模型</div>'+
+      '<select id="rsRoomModel" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg1);color:var(--text);font-size:12px;margin-bottom:12px"><option value="">跟随全局默认</option></select>'+
+      '<div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text)">成员专属模型 <span style="color:var(--muted);font-weight:400">（不选 = 跟随房间默认；接力/单独 @ 时各自生效。多名成员同刻 @ 且模型不同会有竞态，以网关实时默认为准）</span></div>'+
+      (mems||'<div style="color:var(--muted);font-size:12px">无专家成员，主 Hermes 跟随房间默认模型</div>'),
+      '<button class="btn" onclick="this.closest(\'.modal-overlay\').remove()">取消</button><button class="btn primary" onclick="roomSettingsSave()">保存</button>');
+    api30('/api/config').then(function(cfg){
+      var ps=(cfg&&(cfg.providers||cfg.ymlProviders))||[];
+      var optsHtml='';
+      ps.forEach(function(p){
+        var models=(p.models&&p.models.length)?p.models:[p.model].filter(Boolean);
+        models.forEach(function(md){
+          var mid=(typeof md==='string')?md:(md&&(md.id||md.name)||'');
+          var mlabel=(typeof md==='string')?md:(md&&(md.name||md.id)||mid);
+          if(mid) optsHtml+='<option value="'+mid+'">'+mlabel+'（'+(p.name||p.id)+'）</option>';
+        });
+      });
+      var rsel=document.getElementById('rsRoomModel'); if(rsel) rsel.innerHTML='<option value="">跟随全局默认</option>'+optsHtml;
+      document.querySelectorAll('.rs-mdl').forEach(function(s){ s.innerHTML='<option value="">跟随房间默认</option>'+optsHtml; });
+      // 回填当前值
+      if(rsel&&room.model) rsel.value=room.model;
+      (room.members||[]).forEach(function(m){
+        if(!m.model) return;
+        var row=document.querySelector('[data-mkey="'+m.key+'"] .rs-mdl');
+        if(row) row.value=m.model;
+      });
+    }).catch(function(){});
+  }).catch(function(){ toast30('房间数据加载失败','error'); });
+};
+window.roomSettingsSave=function(){
+  if(!currentRoom) return;
+  var title=(document.getElementById('rsTitle').value||'').trim();
+  var model=(document.getElementById('rsRoomModel')||{}).value||'';
+  api30('/api/rooms/'+encodeURIComponent(currentRoom),'POST',{title:title,model:model}).then(function(){
+    var members=[];
+    document.querySelectorAll('.modal-overlay [data-mkey]').forEach(function(row){
+      var sel=row.querySelector('.rs-mdl');
+      if(sel) members.push({ key:row.getAttribute('data-mkey'), model:sel.value });
+    });
+    if(!members.length) return {ok:true};
+    return api30('/api/rooms/'+encodeURIComponent(currentRoom)+'/members','POST',{members:members});
+  }).then(function(r){
+    if(r&&r.ok===false){ toast30('保存失败: '+((r&&r.error)||''),'error'); return; }
+    toast30('房间设置已保存','success');
+    var ov=document.querySelector('.modal-overlay'); if(ov) ov.remove();
+    if(typeof loadRoomsList==="function") loadRoomsList().then(function(){ if(typeof selectRoom==="function") selectRoom(currentRoom); });
+  }).catch(function(e){ toast30('保存失败: '+e.message,'error'); });
 };
 
 /* 微信扫码轮询容错：网络波动（网关重启窗口）自动静默重试，不再直接报 Failed to fetch */
